@@ -147,6 +147,10 @@ type Options struct {
 
 	// If meshConfig.DiscoverySelectors are specified, the DiscoveryNamespacesFilter tracks the namespaces this controller watches.
 	DiscoveryNamespacesFilter filter.DiscoveryNamespacesFilter
+
+	DiscoveryServicesFilter filter.DiscoveryServicesFilter
+
+	DiscoveryEndpointsFilter filter.DiscoveryEndpointsFilter
 }
 
 func (o Options) GetSyncInterval() time.Duration {
@@ -304,18 +308,26 @@ func NewController(kubeClient kubelib.Client, options Options) *Controller {
 	if c.opts.DiscoveryNamespacesFilter == nil {
 		c.opts.DiscoveryNamespacesFilter = filter.NewDiscoveryNamespacesFilter(c.nsLister, options.MeshWatcher.Mesh().DiscoverySelectors)
 	}
+	if c.opts.DiscoveryServicesFilter == nil {
+		c.opts.DiscoveryServicesFilter = filter.NewDiscoveryServicesFilter()
+	}
 
 	c.initDiscoveryHandlers(kubeClient, options.EndpointMode, options.MeshWatcher, c.opts.DiscoveryNamespacesFilter)
 
-	c.serviceInformer = filter.NewFilteredSharedIndexInformer(c.opts.DiscoveryNamespacesFilter.Filter, kubeClient.KubeInformer().Core().V1().Services().Informer())
+	serviceFilter := filter.NewAggregatedFilter(c.opts.DiscoveryNamespacesFilter.Filter, c.opts.DiscoveryServicesFilter.Filter)
+	c.serviceInformer = filter.NewFilteredSharedIndexInformer(serviceFilter.Filter, kubeClient.KubeInformer().Core().V1().Services().Informer())
 	c.serviceLister = listerv1.NewServiceLister(c.serviceInformer.GetIndexer())
 
 	c.registerHandlers(c.serviceInformer, "Services", c.onServiceEvent, nil)
 
+	if c.opts.DiscoveryEndpointsFilter == nil {
+		c.opts.DiscoveryEndpointsFilter = filter.NewDiscoveryEndpointsFilter(c.serviceLister)
+	}
+	endpointFilter := filter.NewAggregatedFilter(c.opts.DiscoveryNamespacesFilter.Filter, c.opts.DiscoveryEndpointsFilter.Filter)
 	switch options.EndpointMode {
 	case EndpointsOnly:
 		endpointsInformer := filter.NewFilteredSharedIndexInformer(
-			c.opts.DiscoveryNamespacesFilter.Filter,
+			endpointFilter.Filter,
 			kubeClient.KubeInformer().Core().V1().Endpoints().Informer(),
 		)
 		c.endpoints = newEndpointsController(c, endpointsInformer)
